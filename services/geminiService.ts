@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { IntimacyLevel, ItemType, WheelItem } from "../types";
 
 const createItem = (text: string, type: ItemType, color: string): WheelItem => ({
@@ -34,13 +34,14 @@ const getColorsForLevel = (level: IntimacyLevel) => {
 
 export const generateNewItems = async (level: IntimacyLevel): Promise<WheelItem[]> => {
   try {
-    const apiKey = process.env.API_KEY;
+    const apiKey = (import.meta.env as any).VITE_API_KEY;
     if (!apiKey) {
       console.warn("No API Key found");
       return [];
     }
 
-    const ai = new GoogleGenAI({ apiKey });
+    const client = new GoogleGenerativeAI(apiKey);
+    const model = client.getGenerativeModel({ model: "gemini-2.0-flash" });
     
     let levelPrompt = "";
     switch(level) {
@@ -59,40 +60,32 @@ export const generateNewItems = async (level: IntimacyLevel): Promise<WheelItem[
     The intimacy level is: ${levelPrompt}.
     Mix rewards (fun/pleasurable) and mild punishments (dares/chores).
     Keep descriptions short (under 10 Chinese characters if possible).
-    Return ONLY JSON.`;
+    Return ONLY a JSON array with this structure: [{"text": "task in Chinese", "type": "REWARD" or "PUNISHMENT"}, ...]`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            items: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  text: { type: Type.STRING, description: "The task text in Chinese" },
-                  type: { type: Type.STRING, enum: ["REWARD", "PUNISHMENT"] }
-                },
-                required: ["text", "type"]
-              }
-            }
-          }
-        }
-      }
-    });
+    const result = await model.generateContent(prompt);
 
-    const jsonStr = response.text;
+    const jsonStr = result.response.text();
     if (!jsonStr) throw new Error("Empty response");
 
-    const parsed = JSON.parse(jsonStr);
-    const colors = getColorsForLevel(level);
+    // Parse JSON response - try to extract JSON from response
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonStr);
+    } catch {
+      // Try to extract JSON array from response
+      const jsonMatch = jsonStr.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        parsed = JSON.parse(jsonMatch[0]);
+      } else {
+        throw new Error("Could not parse JSON from response");
+      }
+    }
 
-    if (parsed.items && Array.isArray(parsed.items)) {
-      return parsed.items.map((item: any, index: number) => 
+    const colors = getColorsForLevel(level);
+    const items = Array.isArray(parsed) ? parsed : parsed.items || [];
+
+    if (items && Array.isArray(items)) {
+      return items.map((item: any, index: number) => 
         createItem(item.text, item.type === "REWARD" ? ItemType.Reward : ItemType.Punishment, colors[index % colors.length])
       );
     }
